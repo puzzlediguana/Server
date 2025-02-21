@@ -4,7 +4,7 @@ import Obj from '#/engine/entity/Obj.js';
 import Player from '#/engine/entity/Player.js';
 import PathingEntity from '#/engine/entity/PathingEntity.js';
 import EntityLifeCycle from '#/engine/entity/EntityLifeCycle.js';
-import {CoordGrid} from '#/engine/CoordGrid.js';
+import { CoordGrid } from '#/engine/CoordGrid.js';
 
 import World from '#/engine/World.js';
 import ZoneMap from '#/engine/zone/ZoneMap.js';
@@ -27,7 +27,7 @@ import LocMerge from '#/network/server/model/LocMerge.js';
 import ServerProtRepository from '#/network/rs225/server/prot/ServerProtRepository.js';
 import ZoneMessageEncoder from '#/network/server/codec/ZoneMessageEncoder.js';
 import ZoneMessage from '#/network/server/ZoneMessage.js';
-import ZoneEntityList, {LocList, ObjList} from '#/engine/zone/ZoneEntityList.js';
+import ZoneEntityList, { LocList, ObjList } from '#/engine/zone/ZoneEntityList.js';
 import NonPathingEntity from '#/engine/entity/NonPathingEntity.js';
 import ObjType from '#/cache/config/ObjType.js';
 import Environment from '#/util/Environment.js';
@@ -146,7 +146,12 @@ export default class Zone {
                     continue;
                 }
                 if (loc.lifecycle === EntityLifeCycle.DESPAWN) {
-                    World.removeLoc(loc, 0);
+                    const change = this.findChangeLoc(loc);
+                    if (change) {
+                        World.changeLoc(loc, change, 0);
+                    } else {
+                        World.removeLoc(loc, 0);
+                    }
                     updated = true;
                 }
             }
@@ -165,60 +170,6 @@ export default class Zone {
             }
         } while (updated);
     }
-
-    // tick(tick: number): void {
-    //     let updated: boolean;
-    //     do {
-    //         updated = false;
-    //         for (const obj of this.getAllObjsUnsafe()) {
-    //             if (!obj.updateLifeCycle(tick) || obj.lastLifecycleTick === tick) {
-    //                 continue;
-    //             }
-    //             if (obj.lifecycle === EntityLifeCycle.DESPAWN) {
-    //                 if (obj.reveal !== -1) {
-    //                     World.revealObj(obj);
-    //                 } else {
-    //                     World.removeObj(obj, 0);
-    //                     updated = true;
-    //                 }
-    //             } else if (obj.lifecycle === EntityLifeCycle.RESPAWN) {
-    //                 World.addObj(obj, Obj.NO_RECEIVER, 0);
-    //                 updated = true;
-    //             }
-    //         }
-    //         for (const loc of this.getAllLocsUnsafe()) {
-    //             if (!loc.updateLifeCycle(tick) || loc.lastLifecycleTick === tick) {
-    //                 continue;
-    //             }
-    //             if (loc.lifecycle === EntityLifeCycle.DESPAWN) {
-    //                 World.removeLoc(loc, 0);
-    //                 updated = true;
-    //             }
-    //         }
-    //         for (const loc of this.getAllLocsUnsafe()) {
-    //             if (!loc.updateLifeCycle(tick) || loc.lastLifecycleTick === tick) {
-    //                 continue;
-    //             }
-    //             if (loc.lifecycle === EntityLifeCycle.RESPAWN) {
-    //                 World.addLoc(loc, 0);
-    //                 updated = true;
-    //             }
-    //         }
-    //         // for (const loc of this.getAllLocsUnsafe()) {
-    //         //     if (!loc.updateLifeCycle(tick) || loc.lastLifecycleTick === tick) {
-    //         //         continue;
-    //         //     }
-    //         //     if (loc.lifecycle === EntityLifeCycle.DESPAWN) {
-    //         //         World.removeLoc(loc, 0);
-    //         //         updated = true;
-    //         //     } else if (loc.lifecycle === EntityLifeCycle.RESPAWN) {
-    //         //         World.addLoc(loc, 0);
-    //         //         updated = true;
-    //         //     }
-    //         // }
-    //     } while (updated);
-    //     this.computeShared();
-    // }
 
     computeShared(): void {
         const buf: Packet = Packet.alloc(1);
@@ -251,46 +202,28 @@ export default class Zone {
      * - This does not include any updates that were made to the zones "THIS TICK".
      */
     writeFullFollows(player: Player): void {
-        const currentTick: number = World.currentTick;
         // full update necessary to clear client zone memory
         player.write(new UpdateZoneFullFollows(this.x, this.z, player.originX, player.originZ));
-        for (const obj of this.getAllObjsUnsafe(true)) {
-            if (obj.lastLifecycleTick === currentTick || (obj.receiver64 !== Obj.NO_RECEIVER && obj.receiver64 !== player.hash64)) {
-                continue;
-            }
-            player.write(new UpdateZonePartialFollows(this.x, this.z, player.originX, player.originZ));
-            if (obj.lifecycle === EntityLifeCycle.DESPAWN && obj.checkLifeCycle(currentTick)) {
-                player.write(new ObjAdd(CoordGrid.packZoneCoord(obj.x, obj.z), obj.type, obj.count));
-            } else if (obj.lifecycle === EntityLifeCycle.RESPAWN && obj.checkLifeCycle(currentTick)) {
-                player.write(new ObjAdd(CoordGrid.packZoneCoord(obj.x, obj.z), obj.type, obj.count));
-            }
-        }
-        for (const loc of this.getAllLocsUnsafe()) {
-            if (loc.lastLifecycleTick === currentTick) {
-                continue;
-            }
-            if (loc.lifecycle === EntityLifeCycle.RESPAWN && !loc.checkLifeCycle(currentTick)) {
+        // osrs does locs first and then objs.
+        for (const loc of this.getAllLocsUnsafe(true)) {
+            if (loc.lifecycle === EntityLifeCycle.DESPAWN && loc.isValid()) {
+                player.write(new LocAddChange(CoordGrid.packZoneCoord(loc.x, loc.z), loc.type, loc.shape, loc.angle));
+            } else if (loc.lifecycle === EntityLifeCycle.RESPAWN && !loc.isValid() && !this.findChangeLoc(loc)) {
                 player.write(new LocDel(CoordGrid.packZoneCoord(loc.x, loc.z), loc.shape, loc.angle));
             }
         }
-        for (const loc of this.getAllLocsUnsafe()) {
-            if (loc.lastLifecycleTick === currentTick) {
+        for (const obj of this.getAllObjsUnsafe(true)) {
+            if (obj.receiver64 !== Obj.NO_RECEIVER && obj.receiver64 !== player.hash64) {
                 continue;
             }
-            if (loc.lifecycle === EntityLifeCycle.DESPAWN && loc.checkLifeCycle(currentTick)) {
-                player.write(new LocAddChange(CoordGrid.packZoneCoord(loc.x, loc.z), loc.type, loc.shape, loc.angle));
+            // osrs sends individual partial follows even on the same tick+zone+tile.
+            player.write(new UpdateZonePartialFollows(this.x, this.z, player.originX, player.originZ));
+            if (obj.lifecycle === EntityLifeCycle.DESPAWN && obj.isValid()) {
+                player.write(new ObjAdd(CoordGrid.packZoneCoord(obj.x, obj.z), obj.type, obj.count));
+            } else if (obj.lifecycle === EntityLifeCycle.RESPAWN && obj.isValid()) {
+                player.write(new ObjAdd(CoordGrid.packZoneCoord(obj.x, obj.z), obj.type, obj.count));
             }
         }
-        // for (const loc of this.getAllLocsUnsafe(true)) {
-        //     if (loc.lastLifecycleTick === currentTick) {
-        //         continue;
-        //     }
-        //     if (loc.lifecycle === EntityLifeCycle.DESPAWN && loc.checkLifeCycle(currentTick)) {
-        //         player.write(new LocAddChange(CoordGrid.packZoneCoord(loc.x, loc.z), loc.type, loc.shape, loc.angle));
-        //     } else if (loc.lifecycle === EntityLifeCycle.RESPAWN && !loc.checkLifeCycle(currentTick)) {
-        //         player.write(new LocDel(CoordGrid.packZoneCoord(loc.x, loc.z), loc.shape, loc.angle));
-        //     }
-        // }
     }
 
     /**
@@ -300,7 +233,7 @@ export default class Zone {
      * updates after the client is set back to the original map then updated with the "currently seen zones".
      * - "currently seen zones" meaning all the visible objs and locs that should be visible to the client.
      */
-    writePartialEncloses(player: Player): void {
+    writePartialEnclosed(player: Player): void {
         if (!this.shared) {
             return;
         }
@@ -314,11 +247,12 @@ export default class Zone {
         if (this.events.size === 0) {
             return;
         }
-        player.write(new UpdateZonePartialFollows(this.x, this.z, player.originX, player.originZ));
         for (const event of this.follows()) {
             if (event.receiver64 !== Obj.NO_RECEIVER && event.receiver64 !== player.hash64) {
                 continue;
             }
+            // osrs sends individual partial follows even on the same tick+zone+tile.
+            player.write(new UpdateZonePartialFollows(this.x, this.z, player.originX, player.originZ));
             player.write(event.message);
         }
     }
@@ -335,12 +269,15 @@ export default class Zone {
         const coord: number = CoordGrid.packZoneCoord(loc.x, loc.z);
         this.locs.addLast(coord, loc, true);
         this.locs.sortStack(coord, true);
+        loc.isActive = true;
     }
 
     addStaticObj(obj: Obj): void {
         const coord: number = CoordGrid.packZoneCoord(obj.x, obj.z);
         this.objs.addLast(coord, obj, true);
         this.objs.sortStack(coord, true);
+        obj.isRevealed = true;
+        obj.isActive = true;
     }
 
     // ---- locs ----
@@ -352,8 +289,24 @@ export default class Zone {
         }
 
         this.locs.sortStack(coord);
+        loc.isActive = true;
 
         this.queueEvent(loc, new ZoneEvent(ZoneEventType.ENCLOSED, -1n, new LocAddChange(coord, loc.type, loc.shape, loc.angle)));
+    }
+
+    changeLoc(from: Loc, to: Loc): void {
+        const coord: number = CoordGrid.packZoneCoord(from.x, from.z);
+        if (to.lifecycle === EntityLifeCycle.DESPAWN) {
+            this.locs.addLast(coord, to);
+        } else if (from.lifecycle === EntityLifeCycle.DESPAWN) {
+            this.locs.remove(coord, from);
+        }
+
+        this.locs.sortStack(coord);
+        from.isActive = false;
+        to.isActive = true;
+
+        this.queueEvent(from, new ZoneEvent(ZoneEventType.ENCLOSED, -1n, new LocAddChange(coord, to.type, to.shape, to.angle)));
     }
 
     removeLoc(loc: Loc): void {
@@ -364,6 +317,7 @@ export default class Zone {
 
         this.locs.sortStack(coord);
         this.clearQueuedEvents(loc);
+        loc.isActive = false;
 
         if (loc.lastLifecycleTick !== World.currentTick) {
             this.queueEvent(loc, new ZoneEvent(ZoneEventType.ENCLOSED, -1n, new LocDel(coord, loc.shape, loc.angle)));
@@ -396,17 +350,20 @@ export default class Zone {
         }
 
         this.objs.sortStack(coord);
+        obj.isActive = true;
 
         if (obj.lifecycle === EntityLifeCycle.RESPAWN || receiver64 === Obj.NO_RECEIVER) {
+            obj.isRevealed = true;
             this.queueEvent(obj, new ZoneEvent(ZoneEventType.ENCLOSED, receiver64, new ObjAdd(coord, obj.type, obj.count)));
         } else if (obj.lifecycle === EntityLifeCycle.DESPAWN) {
+            obj.isRevealed = false;
             this.queueEvent(obj, new ZoneEvent(ZoneEventType.FOLLOWS, receiver64, new ObjAdd(coord, obj.type, obj.count)));
         }
     }
 
     revealObj(obj: Obj, receiver64: bigint): void {
         const objType: ObjType = ObjType.get(obj.type);
-        if (!(objType.tradeable && (objType.members && Environment.NODE_MEMBERS || !objType.members))) {
+        if (!(objType.tradeable && ((objType.members && Environment.NODE_MEMBERS) || !objType.members))) {
             obj.reveal = -1;
             return;
         }
@@ -414,6 +371,7 @@ export default class Zone {
         obj.receiver64 = Obj.NO_RECEIVER;
         obj.reveal = -1;
         obj.lastChange = -1;
+        obj.isRevealed = true;
 
         const coord: number = CoordGrid.packZoneCoord(obj.x, obj.z);
         this.objs.sortStack(coord);
@@ -439,6 +397,7 @@ export default class Zone {
 
         this.objs.sortStack(coord);
         this.clearQueuedEvents(obj);
+        obj.isActive = false;
 
         if (obj.lastLifecycleTick !== World.currentTick) {
             if (obj.lifecycle === EntityLifeCycle.RESPAWN || obj.receiver64 === Obj.NO_RECEIVER) {
@@ -451,7 +410,7 @@ export default class Zone {
 
     getObj(x: number, z: number, type: number, receiver64: bigint): Obj | null {
         for (const obj of this.getObjsSafe(CoordGrid.packZoneCoord(x, z))) {
-            if (!((obj.receiver64 !== Obj.NO_RECEIVER && obj.receiver64 !== receiver64) || obj.type !== type)) {
+            if ((obj.receiver64 === Obj.NO_RECEIVER || obj.receiver64 === receiver64) && obj.type === type) {
                 return obj;
             }
         }
@@ -460,7 +419,7 @@ export default class Zone {
 
     getObjOfReceiver(x: number, z: number, type: number, receiver64: bigint): Obj | null {
         for (const obj of this.getObjsSafe(CoordGrid.packZoneCoord(x, z))) {
-            if (!((obj.receiver64 !== receiver64) || obj.type !== type)) {
+            if (obj.receiver64 === receiver64 && obj.type === type) {
                 return obj;
             }
         }
@@ -486,7 +445,7 @@ export default class Zone {
     *getAllPlayersSafe(): IterableIterator<Player> {
         for (const uid of this.players) {
             const player: Player | null = World.getPlayerByUid(uid);
-            if (player && player.checkLifeCycle(World.currentTick)) {
+            if (player && player.isValid()) {
                 yield player;
             }
         }
@@ -499,7 +458,7 @@ export default class Zone {
     *getAllNpcsSafe(): IterableIterator<Npc> {
         for (const nid of this.npcs) {
             const npc: Npc | undefined = World.getNpc(nid);
-            if (npc && npc.checkLifeCycle(World.currentTick)) {
+            if (npc && npc.isValid()) {
                 yield npc;
             }
         }
@@ -511,7 +470,7 @@ export default class Zone {
      */
     *getAllObjsSafe(): IterableIterator<Obj> {
         for (const obj of this.objs.all()) {
-            if (obj.checkLifeCycle(World.currentTick)) {
+            if (obj.isValid()) {
                 yield obj;
             }
         }
@@ -523,8 +482,7 @@ export default class Zone {
      */
     *getObjsSafe(coord: number): IterableIterator<Obj> {
         for (const obj of this.objs.stack(coord)) {
-            // lifecycle is set after reveal, this is so objects aren't unavailble the tick they are revealed
-            if (obj.checkLifeCycle(World.currentTick) || obj.reveal !== -1) {
+            if (obj.isValid()) {
                 yield obj;
             }
         }
@@ -536,7 +494,7 @@ export default class Zone {
      * "visible" meaning they are active on the server and available to the client.
      */
     *getObjsUnsafe(coord: number): IterableIterator<Obj> {
-        yield *this.objs.stack(coord);
+        yield* this.objs.stack(coord);
     }
 
     /**
@@ -545,7 +503,7 @@ export default class Zone {
      * "visible" meaning they are active on the server and available to the client.
      */
     *getAllObjsUnsafe(reverse: boolean = false): IterableIterator<Obj> {
-        yield *this.objs.all(reverse);
+        yield* this.objs.all(reverse);
     }
 
     /**
@@ -554,7 +512,7 @@ export default class Zone {
      */
     *getAllLocsSafe(): IterableIterator<Loc> {
         for (const loc of this.locs.all()) {
-            if (loc.checkLifeCycle(World.currentTick)) {
+            if (loc.isValid()) {
                 yield loc;
             }
         }
@@ -566,7 +524,7 @@ export default class Zone {
      */
     *getLocsSafe(coord: number): IterableIterator<Loc> {
         for (const loc of this.locs.stack(coord)) {
-            if (loc.checkLifeCycle(World.currentTick)) {
+            if (loc.isValid()) {
                 yield loc;
             }
         }
@@ -578,7 +536,7 @@ export default class Zone {
      * "visible" meaning they are active on the server and available to the client.
      */
     *getLocsUnsafe(coord: number): IterableIterator<Loc> {
-        yield *this.locs.stack(coord);
+        yield* this.locs.stack(coord);
     }
 
     /**
@@ -587,7 +545,19 @@ export default class Zone {
      * "visible" meaning they are active on the server and available to the client.
      */
     *getAllLocsUnsafe(reverse: boolean = false): IterableIterator<Loc> {
-        yield *this.locs.all(reverse);
+        yield* this.locs.all(reverse);
+    }
+
+    private findChangeLoc(entity: Loc): Loc | null {
+        for (const loc of this.getLocsUnsafe(CoordGrid.packZoneCoord(entity.x, entity.z))) {
+            if (loc === entity) {
+                continue;
+            }
+            if (loc.layer === entity.layer && entity.shape === loc.shape) {
+                return loc;
+            }
+        }
+        return null;
     }
 
     /**

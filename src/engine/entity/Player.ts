@@ -74,10 +74,16 @@ import Environment from '#/util/Environment.js';
 import { ChatModePrivate, ChatModePublic, ChatModeTradeDuel } from '#/util/ChatModes.js';
 import LoggerEventType from '#/server/logger/LoggerEventType.js';
 import InputTracking from '#/engine/entity/tracking/InputTracking.js';
-import { findNaivePath, reachedEntity, reachedLoc, reachedObj } from '#/engine/GameMap.js';
+import { changeNpcCollision, changePlayerCollision, findNaivePath, reachedEntity, reachedLoc, reachedObj } from '#/engine/GameMap.js';
 import Visibility from './Visibility.js';
 import UpdateRebootTimer from '#/network/server/model/UpdateRebootTimer.js';
 import { CollisionType } from '@2004scape/rsmod-pathfinder';
+import SceneState from '#/engine/entity/SceneState.js';
+import ZoneMap from '#/engine/zone/ZoneMap.js';
+import UpdateStat from '#/network/server/model/UpdateStat.js';
+import UpdateZoneFullFollows from '#/network/server/model/UpdateZoneFullFollows.js';
+import RebuildNormal from '#/network/server/model/RebuildNormal.js';
+import UpdateRunEnergy from '#/network/server/model/UpdateRunEnergy.js';
 const levelExperience = new Int32Array(99);
 
 let acc = 0;
@@ -112,21 +118,83 @@ export default class Player extends PathingEntity {
     ];
 
     static readonly MALE_FEMALE_MAP = new Map<number, number>([
-        [0, 45], [1, 47], [2, 48], [3, 49], [4, 50], [5, 51], [6, 52], [7, 53], [8, 54], [9, 55],
-        [18, 56], [19, 56], [20, 56], [21, 56], [22, 56], [23, 56], [24, 56], [25, 56],
-        [26, 61], [27, 63], [28, 62], [29, 65], [30, 64], [31, 63], [32, 66],
-        [33, 67], [34, 68], [35, 69], 
-        [36, 70], [37, 71], [38, 72], [39, 76], [40, 75], [41, 78],
-        [42, 79], [43, 80], [44, 81]
+        [0, 45],
+        [1, 47],
+        [2, 48],
+        [3, 49],
+        [4, 50],
+        [5, 51],
+        [6, 52],
+        [7, 53],
+        [8, 54],
+        [9, 55],
+        [18, 56],
+        [19, 56],
+        [20, 56],
+        [21, 56],
+        [22, 56],
+        [23, 56],
+        [24, 56],
+        [25, 56],
+        [26, 61],
+        [27, 63],
+        [28, 62],
+        [29, 65],
+        [30, 64],
+        [31, 63],
+        [32, 66],
+        [33, 67],
+        [34, 68],
+        [35, 69],
+        [36, 70],
+        [37, 71],
+        [38, 72],
+        [39, 76],
+        [40, 75],
+        [41, 78],
+        [42, 79],
+        [43, 80],
+        [44, 81]
     ]);
 
     static readonly FEMALE_MALE_MAP = new Map<number, number>([
-        [45, 0], [46, 0], [47, 1], [48, 2], [49, 3], [50, 4], [51, 5], [52, 6], [53, 7], [54, 8], [55, 9],
-        [56, 18], [57, 18], [58, 18], [59, 18], [60, 18], 
-        [61, 26], [62, 27], [63, 28], [64, 29], [65, 29], [66, 32],
-        [67, 33], [68, 34], [69, 35], 
-        [70, 36], [71, 37], [72, 38], [73, 36], [74, 36], [75, 40], [76, 39], [77, 36], [78, 41],
-        [79, 42], [80, 43], [81, 44]
+        [45, 0],
+        [46, 0],
+        [47, 1],
+        [48, 2],
+        [49, 3],
+        [50, 4],
+        [51, 5],
+        [52, 6],
+        [53, 7],
+        [54, 8],
+        [55, 9],
+        [56, 18],
+        [57, 18],
+        [58, 18],
+        [59, 18],
+        [60, 18],
+        [61, 26],
+        [62, 27],
+        [63, 28],
+        [64, 29],
+        [65, 29],
+        [66, 32],
+        [67, 33],
+        [68, 34],
+        [69, 35],
+        [70, 36],
+        [71, 37],
+        [72, 38],
+        [73, 36],
+        [74, 36],
+        [75, 40],
+        [76, 39],
+        [77, 36],
+        [78, 41],
+        [79, 42],
+        [80, 43],
+        [81, 44]
     ]);
 
     save() {
@@ -336,6 +404,11 @@ export default class Player extends PathingEntity {
     muted_until: Date | null = null;
     members: boolean = true;
 
+    socialProtect: boolean = false; // social packet spam protection
+    reportAbuseProtect: boolean = false; // social packet spam protection
+
+    scene: SceneState = SceneState.NONE;
+
     constructor(username: string, username37: bigint, hash64: bigint) {
         super(0, 3094, 3106, 1, 1, EntityLifeCycle.FOREVER, MoveRestrict.NORMAL, BlockWalk.NPC, MoveStrategy.SMART, InfoProt.PLAYER_FACE_COORD.id, InfoProt.PLAYER_FACE_ENTITY.id); // tutorial island.
         this.username = username;
@@ -389,16 +462,28 @@ export default class Player extends PathingEntity {
         this.message = null;
         this.logMessage = null;
         this.appearance = -1;
+        this.socialProtect = false;
+        this.reportAbuseProtect = false;
     }
 
     // ----
 
     onLogin() {
-        // normalize client between logins
+        // - rebuild_normal
+        // - chat_filter_settings
+        // - varp_reset
+        // - varps
+        // - invs
+        // - interfaces
+        // - stats
+        // - runweight
+        // - runenergy
+        // - reset anims
+        // - social
+        this.rebuildNormal();
+        this.write(new ChatFilterSettings(this.publicChat, this.privateChat, this.tradeDuel));
         this.write(new IfClose());
         this.write(new UpdateUid192(this.pid));
-        this.unsetMapFlag();
-        this.write(new ResetAnims());
         this.write(new ResetClientVarCache());
         for (let varp = 0; varp < this.vars.length; varp++) {
             const type = VarPlayerType.get(varp);
@@ -407,7 +492,7 @@ export default class Player extends PathingEntity {
                 this.writeVarp(varp, value);
             }
         }
-        this.write(new ChatFilterSettings(this.publicChat, this.privateChat, this.tradeDuel));
+        this.write(new ResetAnims());
 
         const loginTrigger = ScriptProvider.getByTriggerSpecific(ServerTriggerType.LOGIN, -1, -1);
         if (loginTrigger) {
@@ -420,20 +505,42 @@ export default class Player extends PathingEntity {
     }
 
     onReconnect() {
+        // - varp_reset
+        // - varps
+        // - rebuild_normal
+        // - invs
+        // - stats
+        // - runweight
+        // - runenergy
+        // - reset_anims
+        // - socials
+        this.write(new ResetClientVarCache());
+        for (let varp = 0; varp < this.vars.length; varp++) {
+            const type = VarPlayerType.get(varp);
+            const value = this.vars[varp];
+            if (type.transmit) {
+                this.writeVarp(varp, value);
+            }
+        }
         // force resyncing
+        this.scene = SceneState.NONE;
         // reload entity info (overkill? does the client have some logic around this?)
         this.buildArea.clear(true);
+        // rebuild scene (rebuildnormal won't run if you're in the same zone!)
+        this.rebuildNormal();
+        this.scene = SceneState.LOAD;
         // in case of pending update
         if (World.isPendingShutdown) {
             const ticksBeforeShutdown = World.shutdownTicksRemaining;
             this.write(new UpdateRebootTimer(ticksBeforeShutdown));
         }
-        this.write(new ResetAnims());
-        // rebuild scene (rebuildnormal won't run if you're in the same zone!)
-        this.originX = -1;
-        this.originZ = -1;
-        // resync invs
+        this.closeModal();
         this.refreshInvs();
+        for (let i = 0; i < this.stats.length; i++) {
+            this.write(new UpdateStat(i, this.stats[i], this.levels[i]));
+        }
+        this.write(new UpdateRunEnergy(this.runenergy));
+        this.write(new ResetAnims());
         this.moveSpeed = MoveSpeed.INSTANT;
         this.tele = true;
         this.jump = true;
@@ -564,7 +671,7 @@ export default class Player extends PathingEntity {
             const recovered = ((this.baseLevels[PlayerStat.AGILITY] / 9) | 0) + 8;
             this.runenergy = Math.min(this.runenergy + recovered, 10000);
         } else {
-            const weightKg = Math.floor(this.runweight / 1000);
+            const weightKg = this.runweight / 1000;
             const clampWeight = Math.min(Math.max(weightKg, 0), 64);
             const loss = (67 + (67 * clampWeight) / 64) | 0;
             this.runenergy = Math.max(this.runenergy - loss, 0);
@@ -935,7 +1042,7 @@ export default class Player extends PathingEntity {
         this.clearWaypoints();
     }
 
-    protected inOperableDistance(target: Entity): boolean {
+    inOperableDistance(target: Entity): boolean {
         if (target.level !== this.level) {
             return false;
         }
@@ -1450,13 +1557,13 @@ export default class Player extends PathingEntity {
         }
 
         const fromObj = this.invGetSlot(fromInv, fromSlot);
-        if (!fromObj) {
-            throw new Error(`invMoveToSlot: Invalid from obj was null. This means the obj does not exist at this slot: ${fromSlot}`);
-        }
-
         const toObj = this.invGetSlot(toInv, toSlot);
-        this.invSet(toInv, fromObj.id, fromObj.count, toSlot);
 
+        if (fromObj) {
+            this.invSet(toInv, fromObj.id, fromObj.count, toSlot);
+        } else {
+            this.invDelSlot(toInv, toSlot);
+        }
         if (toObj) {
             this.invSet(fromInv, toObj.id, toObj.count, fromSlot);
         } else {
@@ -1703,6 +1810,14 @@ export default class Player extends PathingEntity {
         }
         // This doesn't actually cancel interactions, source: https://youtu.be/ARS7eO3_Z8U?si=OkYfjW0sVhkQmQ8y&t=293
         this.visibility = visibility;
+        if (visibility === Visibility.DEFAULT) {
+            this.blockWalk = BlockWalk.NPC;
+            changeNpcCollision(this.width, this.x, this.z, this.level, true);
+        } else {
+            this.blockWalk = BlockWalk.NONE;
+            changeNpcCollision(this.width, this.x, this.z, this.level, false);
+            changePlayerCollision(this.width, this.x, this.z, this.level, false);
+        }
         this.messageGame(`vis: ${visibility}`);
     }
 
@@ -1851,6 +1966,62 @@ export default class Player extends PathingEntity {
             return true;
         } else {
             return false;
+        }
+    }
+
+    rebuildZones(): void {
+        // update any newly tracked zones
+        this.buildArea.activeZones.clear();
+
+        const centerX = CoordGrid.zone(this.x);
+        const centerZ = CoordGrid.zone(this.z);
+
+        const originX: number = CoordGrid.zone(this.originX);
+        const originZ: number = CoordGrid.zone(this.originZ);
+
+        const leftX = originX - 6;
+        const rightX = originX + 6;
+        const topZ = originZ + 6;
+        const bottomZ = originZ - 6;
+
+        for (let x = centerX - 3; x <= centerX + 3; x++) {
+            for (let z = centerZ - 3; z <= centerZ + 3; z++) {
+                // check if the zone is within the build area
+                if (x < leftX || x > rightX || z > topZ || z < bottomZ) {
+                    continue;
+                }
+                this.buildArea.activeZones.add(ZoneMap.zoneIndex(x << 3, z << 3, this.level));
+            }
+        }
+    }
+
+    rebuildNormal(): void {
+        const originX: number = CoordGrid.zone(this.originX);
+        const originZ: number = CoordGrid.zone(this.originZ);
+
+        const reloadLeftX = (originX - 4) << 3;
+        const reloadRightX = (originX + 5) << 3;
+        const reloadTopZ = (originZ + 5) << 3;
+        const reloadBottomZ = (originZ - 4) << 3;
+
+        // if the build area should be regenerated, do so now
+        if (this.x < reloadLeftX || this.z < reloadBottomZ || this.x > reloadRightX - 1 || this.z > reloadTopZ - 1 || this.scene === SceneState.NONE) {
+            if (this.scene === SceneState.READY) {
+                // this fixes invisible door issue...
+                for (const zone of this.buildArea.activeZones) {
+                    const { x, z } = ZoneMap.unpackIndex(zone);
+                    if (x < reloadLeftX || z < reloadBottomZ || x > reloadRightX - 1 || z > reloadTopZ - 1) {
+                        this.write(new UpdateZoneFullFollows(CoordGrid.zone(x), CoordGrid.zone(z), this.originX, this.originZ));
+                    }
+                }
+            }
+
+            this.write(new RebuildNormal(CoordGrid.zone(this.x), CoordGrid.zone(this.z)));
+
+            this.originX = this.x;
+            this.originZ = this.z;
+            this.scene = SceneState.NONE;
+            this.buildArea.loadedZones.clear();
         }
     }
 

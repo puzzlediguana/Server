@@ -184,6 +184,7 @@ param=rangedefence,40
 
 [rune_platebody]
 name=Rune platebody
+desc=Provides excellent protection.
 cost=65000
 model=model_2605_obj
 recol1s=6342
